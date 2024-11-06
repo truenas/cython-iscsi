@@ -4,6 +4,7 @@
 #
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+from cpython.bytes cimport PyBytes_FromStringAndSize
 from libc.stdlib cimport calloc
 
 
@@ -13,8 +14,12 @@ cdef extern from "iscsi/scsi-lowlevel.h":
         SCSI_XFER_READ
         SCSI_XFER_WRITE
 
+    cdef struct scsi_data:
+        int size
+        char *data
+
     cdef struct scsi_task:
-        pass
+        scsi_data datain
 
     cdef struct scsi_sense:
         pass
@@ -57,11 +62,22 @@ cdef extern from "iscsi/iscsi.h":
     cdef struct iscsi_data:
         pass
 
+    cdef struct iscsi_target_portal:
+        iscsi_target_portal *next
+        char *portal
+
+    cdef struct iscsi_discovery_address:
+        iscsi_discovery_address *next
+        char *target_name
+        iscsi_target_portal *portals
+
     cdef iscsi_context *iscsi_create_context(const char *initiator_name)
     cdef iscsi_url *iscsi_parse_full_url(iscsi_context *iscsi, const char* url)
     cdef int iscsi_set_targetname(iscsi_context *iscsi, const char *targetname)
     cdef int iscsi_set_session_type(iscsi_context *iscsi, iscsi_session_type session_type)
     cdef int iscsi_set_header_digest(iscsi_context *iscsi, iscsi_header_digest header_digest)
+    cdef int iscsi_set_initiator_username_pwd(iscsi_context *iscsi, const char *user, const char *passwd)
+    cdef int iscsi_set_target_username_pwd(iscsi_context *iscsi, const char *user, const char *passwd)
     cdef int iscsi_full_connect_sync(iscsi_context *iscsi, const char *portal, int lun)
     cdef int iscsi_disconnect(iscsi_context *iscsi)
 
@@ -72,6 +88,8 @@ cdef extern from "iscsi/iscsi.h":
         iscsi_context *iscsi, int lun, scsi_task *task, iscsi_data *data)
     cdef int scsi_task_get_status(scsi_task *task, scsi_sense *sense)
 
+    cdef iscsi_discovery_address *iscsi_discovery_sync(iscsi_context *iscsi)
+    cdef void iscsi_free_discovery_data(iscsi_context *iscsi, iscsi_discovery_address *da)
 
 cdef class Task:
     cdef scsi_task *_task
@@ -89,6 +107,9 @@ cdef class Task:
     def status(self):
         return scsi_task_get_status(self._task, NULL)
 
+    @property
+    def raw_sense(self):
+        return PyBytes_FromStringAndSize(&self._task.datain.data[2], self._task.datain.size-2)
 
 cdef class Context:
     cdef iscsi_context *_ctx
@@ -109,6 +130,14 @@ cdef class Context:
     def set_header_digest(self, iscsi_header_digest header_digest):
         if iscsi_set_header_digest(self._ctx, header_digest) < 0:
             raise ValueError("Invalid header digest: %s" % header_digest)
+
+    def set_initiator_username_pwd(self, str user, str passwd):
+        if iscsi_set_initiator_username_pwd(self._ctx, user.encode('utf-8'), passwd.encode('utf-8')) < 0:
+            raise ValueError("Invalid initiator user/pass: %s" % user)
+
+    def set_target_username_pwd(self, str user, str passwd):
+        if iscsi_set_target_username_pwd(self._ctx, user.encode('utf-8'), passwd.encode('utf-8')) < 0:
+            raise ValueError("Invalid target user/pass: %s" % user)
 
     def connect(self, str portal, int lun):
         if iscsi_full_connect_sync(self._ctx, portal.encode('utf-8'), lun) < 0:
@@ -132,6 +161,20 @@ cdef class Context:
 
         iscsi_scsi_command_sync(self._ctx, lun, task._task, NULL)
 
+    def discover(self):
+        _da = iscsi_discovery_sync(self._ctx)
+        result = {}
+        da = _da
+        while da:
+            portals = []
+            dp = da.portals
+            while dp:
+                portals.append(dp.portal.decode('utf-8'))
+                dp = dp.next
+            result[da.target_name.decode('utf-8')] = portals
+            da = da.next
+        iscsi_free_discovery_data(self._ctx, _da)
+        return result
 
 cdef class URL:
     cdef iscsi_url *_url
