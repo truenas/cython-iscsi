@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
 from cpython.bytes cimport PyBytes_FromStringAndSize
+from libc.stdint cimport uint32_t
 from libc.stdlib cimport calloc
 from cpython.bytes cimport PyBytes_FromStringAndSize
 
@@ -79,6 +80,8 @@ cdef extern from "iscsi/iscsi.h":
     cdef int iscsi_set_header_digest(iscsi_context *iscsi, iscsi_header_digest header_digest)
     cdef int iscsi_set_initiator_username_pwd(iscsi_context *iscsi, const char *user, const char *passwd)
     cdef int iscsi_set_target_username_pwd(iscsi_context *iscsi, const char *user, const char *passwd)
+    cdef int iscsi_set_isid_oui(iscsi_context *iscsi, uint32_t oui, uint32_t qualifier)
+    cdef int iscsi_set_isid_en(iscsi_context *iscsi, uint32_t en, uint32_t qualifier)
     cdef int iscsi_full_connect_sync(iscsi_context *iscsi, const char *portal, int lun)
     cdef int iscsi_disconnect(iscsi_context *iscsi)
 
@@ -91,6 +94,8 @@ cdef extern from "iscsi/iscsi.h":
 
     cdef iscsi_discovery_address *iscsi_discovery_sync(iscsi_context *iscsi)
     cdef void iscsi_free_discovery_data(iscsi_context *iscsi, iscsi_discovery_address *da)
+
+    cdef int iscsi_task_mgmt_lun_reset_sync(iscsi_context *iscsi, uint32_t lun)
 
 cdef class Task:
     cdef scsi_task *_task
@@ -140,6 +145,14 @@ cdef class Context:
         if iscsi_set_target_username_pwd(self._ctx, user.encode('utf-8'), passwd.encode('utf-8')) < 0:
             raise ValueError("Invalid target user/pass: %s" % user)
 
+    def set_isid_oui(self, uint32_t oui, uint32_t qualifier):
+        if iscsi_set_isid_oui(self._ctx, oui, qualifier) < 0:
+            raise ValueError("Invalid ISID OUI/qualifier: %#x/%#x" % (oui, qualifier))
+
+    def set_isid_en(self, uint32_t en, uint32_t qualifier):
+        if iscsi_set_isid_en(self._ctx, en, qualifier) < 0:
+            raise ValueError("Invalid ISID EN/qualifier: %#x/%#x" % (en, qualifier))
+
     def connect(self, str portal, int lun):
         if iscsi_full_connect_sync(self._ctx, portal.encode('utf-8'), lun) < 0:
             raise RuntimeError("Unable to connect to %s" % portal)
@@ -147,6 +160,10 @@ cdef class Context:
     def disconnect(self):
         if iscsi_disconnect(self._ctx) < 0:
             raise RuntimeError("Disconnection error.")
+
+    def lun_reset(self, int lun):
+        if iscsi_task_mgmt_lun_reset_sync(self._ctx, lun) < 0:
+            raise RuntimeError("LUN RESET failed for lun %d" % lun)
 
     def command(self, int lun, Task task, bytearray data_out, bytearray data_in):
         # Get the data in/out bytearrays here so that Python can't change them.
